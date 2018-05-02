@@ -19,6 +19,7 @@ WORK_DIR="tmp"
 
 DEBUG=false
 IGNORE_FAILURES=false
+GEN_KERNEL=false
 KEEP_OUTPUT=false
 RUN_CMD="sh -c"
 RUN_LABEL="run"
@@ -33,7 +34,7 @@ C_CYAN="$E[36m"
 
 usage() {
 	echo "Usage: $0 -h|--help"
-	echo "Usage: $0 build [-d|--debug] [-i|--ignore-failures] [-e SALT_ENV] [-m SALT_MASTER] IMAGE_NAME"
+	echo "Usage: $0 build [-d|--debug] [-i|--ignore-failures] [-e SALT_ENV] [-m SALT_MASTER] [--initramfs] IMAGE_NAME"
 	echo "Usage: $0 torrent [-t|--tracker ANNOUNCE_URL] [*|IMAGE_NAME...]"
 	echo "Usage: $0 clean [*|IMAGE_NAME...]"
 }
@@ -41,6 +42,7 @@ usage() {
 info() {
 	printf "${PREFIX}\033[32m*${C_RESET} %s\n" "$*"
 }
+
 
 run_unless() {
 	COND="$1"
@@ -86,6 +88,26 @@ run_chroot_unless() {
 
 run_chroot() {
 	run_chroot_unless "false" "$@"
+}
+
+
+update_kernel() {
+  echo "updating kernel && initramfs"
+  KVER=$(basename ${ROOTFS_DIR}/usr/lib/modules/[^e]*)
+  cp cri-pxe.conf "${ROOTFS_DIR}"/tmp
+  run_chroot "pacman -Sy --noconfirm  --needed linux git dhclient cpio asciidoc;" \
+   "cd /tmp;"
+  run_chroot "cd /tmp && git clone https://github.com/epita/dracut.git;"\
+  "cd dracut; ./configure && make -j9;" \
+   "locale-gen; ./dracut.sh --kver ${KVER} -l --force --conf /tmp/cri-pxe.conf /tmp/cri.img;"\
+   "cp /tmp/cri.img /boot/cri.img"
+   IMG_NAME=$(basename $(dirname ${ROOTFS_DIR}))
+   cp "${ROOTFS_DIR}/boot/vmlinuz-linux" "initramfs/${IMG_NAME}-vmlinuz-linux"
+   cp "${ROOTFS_DIR}/boot/cri.img" "initramfs/${IMG_NAME}-initramfs.img"
+   echo "Done."
+   echo "Kernel and initramfs are in :"
+   echo "$(ls initramfs/${IMG_NAME}*)"
+   exit 0
 }
 
 step() {
@@ -215,10 +237,13 @@ build() {
 	step "Building ${IMAGE_NAME}..."
 
 	create_dirs
-	mount_bind
+  mount_bind
 	bootstrap
 	install_salt
-	conf
+  if ${GEN_KERNEL}; then
+    update_kernel
+	fi
+  conf
 	call_salt
 	clean_fs
 	squashfs
@@ -236,7 +261,7 @@ clean() {
 
 	step "Cleaning ${IMAGE_NAME}"
 
-	umount_bind
+  umount_bind
 	run rm -rf `dirname "${ROOTFS_DIR}"`
 	run rm -rf "${IMAGES_DIR}/${IMAGE_NAME}.squashfs"
 	run rm -rf "${IMAGES_DIR}/${IMAGE_NAME}_*.torrent"
@@ -263,7 +288,7 @@ torrent() {
 }
 
 GO_SHORT="hide:m:t:"
-GO_LONG="help,ignore-failures,debug,environment,master:,tracker:"
+GO_LONG="initramfs,help,ignore-failures,debug,environment,master:,tracker:"
 
 GO_PARSED=$(getopt --options ${GO_SHORT} --longoptions ${GO_LONG} \
             --name "$0" -- "$@")
@@ -279,6 +304,10 @@ while true; do
 		-h|--help)
 			usage
 			exit 0
+			;;
+		--initramfs)
+		  GEN_KERNEL=true
+      shift
 			;;
 		-i|--ignore-fallures)
 			IGNORE_FAILURES=true
